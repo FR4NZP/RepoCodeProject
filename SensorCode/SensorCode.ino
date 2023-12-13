@@ -3,39 +3,32 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <WiFiManager.h>
-#include "config.h" // Einbinden der Konfigurationsdatei
+#include <ArduinoJson.h>
+#include "config.h"
 
-
-
-#define DHTPIN 5      // Der DHT11-Sensor ist an Pin 5 (D1) angeschlossen
-#define DHTTYPE DHT11 // Verwende DHT11 Sensor, du kannst DHT22 oder DHT21 verwenden
+#define DHTPIN D5
+#define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 void setup() {
-  Serial.begin(115200);  // Beginnen Sie die serielle Kommunikation mit der Baudrate 115200
+  Serial.begin(115200);
 
-  // Verbinden Sie mit WiFi-Netzwerk
-  Serial.print("Verbinde mit ");
+  // Verbindung zum Wi-Fi-Netzwerk herstellen
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
 
-
-      WiFiManager wifiManager;
-    // wifiManager.resetSettings();
-
-    if (!wifiManager.autoConnect("franz_ap")) {
-        Serial.println("Failed to connect and hit timeout");
-        ESP.reset();
-        delay(1000);
-    }
-
-    Serial.println("Connected to WiFi!");
+  Serial.println("Verbunden mit Wi-Fi!");
   Serial.println("IP Adresse: ");
-  Serial.println(WiFi.localIP());  // Drucken Sie die IP-Adresse des ESP8266
+  Serial.println(WiFi.localIP());
 
   // Verbindung zum MQTT-Broker herstellen
- client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setServer(mqttServer, mqttPort);
 
   // Warte, bis die Verbindung hergestellt ist
   while (!client.connected()) {
@@ -50,29 +43,41 @@ void setup() {
   }
 }
 
+
 void loop() {
   // Lese Temperatur- und Luftfeuchtigkeitswerte aus dem DHT11-Sensor
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
 
-  if (isnan(h) || isnan(t)) {
+  if (isnan(temperature) || isnan(humidity)) {
     Serial.println("Fehler beim Lesen des DHT11-Sensors!");
     return;
   }
 
-  // MQTT-Nachrichten senden
-  char temperatureMessage[50];
-  char humidityMessage[50];
+  // Erstelle JSON-Objekte und fülle sie mit den gewünschten Daten
+  DynamicJsonDocument tempJsonDocument(256);
+  tempJsonDocument["sender"] = "franz";
+  tempJsonDocument["mac"] = WiFi.macAddress();
+  tempJsonDocument["temperature"] = temperature;
 
-  snprintf(temperatureMessage, sizeof(temperatureMessage), "%.2f", t);
-  snprintf(humidityMessage, sizeof(humidityMessage), "%.2f", h);
+  DynamicJsonDocument humiJsonDocument(256);
+  humiJsonDocument["sender"] = "franz";
+  humiJsonDocument["mac"] = WiFi.macAddress();
+  humiJsonDocument["humidity"] = humidity;
 
-  // Nachrichten in individuelle Themen für Temperatur und Luftfeuchtigkeit senden
-  client.publish("dp2/Franz/Temperatur", temperatureMessage);
-  client.publish("dp2/Franz/Luftfeuchtigkeit", humidityMessage);
+  // Konvertiere JSON-Objekte in Strings
+  String tempJsonString;
+  serializeJson(tempJsonDocument, tempJsonString);
 
-  Serial.println("Temperatur erfolgreich gesendet: " + String(temperatureMessage));
-  Serial.println("Luftfeuchtigkeit erfolgreich gesendet: " + String(humidityMessage));
+  String humiJsonString;
+  serializeJson(humiJsonDocument, humiJsonString);
 
-  delay(20000); // Warte 2 Sekunden, bevor du die Werte erneut ausliest
+  // Sende JSON-Strukturen als Nachrichten
+  client.publish("dp2/temperature", tempJsonString.c_str());
+  Serial.println("Temperature erfolgreich gesendet: " + tempJsonString);
+
+  client.publish("dp2/humidity", humiJsonString.c_str());
+  Serial.println("Humidity erfolgreich gesendet: " + humiJsonString);
+
+  delay(2000);
 }
