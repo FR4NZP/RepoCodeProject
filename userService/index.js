@@ -1,17 +1,19 @@
+//userService
 require("dotenv").config();
 const cors = require("cors");
 const express = require("express");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const bcrypt = require("bcryptjs");
-const jwt = require('jsonwebtoken')
+const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+const uri = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASSWORD}@${process.env.MONGODB_URI}`;
+
+// const uri ="mongodb+srv://julienoffray:MongodbJulien02@cluster0.vjspczc.mongodb.net/?retryWrites=true&w=majority";
 
 // const uri = `mongodb+srv://${process.env.MONGODB_USER}: ${MONGODB_PASSWORD}@ ${MONGODB_URI}`;
-const uri =
-  "mongodb+srv://franzpfitzer:MongoFranz04@cluster0.vq7cjhw.mongodb.net/?retryWrites=true&w=majority";
 const mongoClient = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -28,12 +30,15 @@ async function connectToDatabase() {
 
 // Endpunkt für die Registrierung
 app.post("/register", async (req, res) => {
+  console.log("calling register endpoint");
+
   const users = await connectToDatabase();
 
   const userData = {
     username: req.body.username,
     password: req.body.password,
   };
+  console.log(userData);
 
   const existingUser = await users.findOne({ username: userData.username });
   if (existingUser) {
@@ -65,32 +70,35 @@ app.post("/login", async (req, res) => {
   if (!passwordisValid) {
     return res.status(401).send("Passwort faslch");
   }
-  const token = jwt.sign({username: user.username}, process.env.JWT_SECRET, {expiresIn: '1h'}) 
+  const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET, {
+    expiresIn: "1h",
+  });
 
   // Login Logik hier (z.B. Session-Erstellung)
-  res.status(200).json({token});
+  res.status(200).json({ token });
 });
 
 //Endpunkt zum Überprüfen des JWT:
-app.post('/verify-token', async (req, res) => {
-  console.log("/verify-token aufgerufen");
-  const authheader = req.headers['authorization'];
-  const token = authheader && authheader.split(' ')[1];   
-  console.log(token);
-  if (!token) {
-      return res.status(401).send('Kein Token vorhanden');
-  }
-  try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      console.log("Token passt");
-      console.log(decoded);
-      res.status(200).send({isValid: true, user: req.user});
-  } catch (err) {
-      res.status(401).send('Token ist ungültig');
-  }
+app.get("/validate-token", authenticateToken, (req, res) => {
+  // console.log("validation is in progress");
+  res.status(200).send({ isValid: true, user: req.user });
 });
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) {
+    console.log("Kein Token vorhanden");
+    return res.status(401).send("Kein Token vorhanden");
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).send("Token ist ungültig");
+    req.user = user;
+    res.status(200).send({ isValid: true, user: req.user });
+  });
+}
 
 const PORT = process.env.USERSERVICE_PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Server läuft auf Port ${PORT}`);
+  console.log(`Userservice läuft auf Port ${PORT}`);
 });

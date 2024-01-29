@@ -1,3 +1,4 @@
+//sensorService
 require("dotenv").config();
 const express = require("express");
 const mqtt = require("mqtt");
@@ -39,7 +40,12 @@ const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL, {
 // MQTT Verbindung und Nachrichtenhandling
 mqttClient.on("connect", () => {
   mqttClient.subscribe(
-    [process.env.MQTT_TEMPERATURE_TOPIC, process.env.MQTT_HUMIDITY_TOPIC],
+    [
+      process.env.MQTT_TEMPERATURE_TOPIC,
+      process.env.MQTT_HUMIDITY_TOPIC,
+      process.env.MQTT_DUST_TOPIC, // Neues Topic für Staubdaten
+      process.env.MQTT_CO2_TOPIC,
+    ],
     (err) => {
       if (err) {
         console.error("Fehler beim Abonnieren der MQTT-Themen:", err);
@@ -50,113 +56,158 @@ mqttClient.on("connect", () => {
   );
 });
 
+// MQTT Verbindung und Nachrichtenhandling
 mqttClient.on("message", async (topic, message) => {
   const msg = message.toString();
-  //   console.log(`Nachricht erhalten zu Thema ${topic}: ${msg}`);
-
   let data;
+
   try {
     data = JSON.parse(msg);
-    // console.log(data);
+    console.log("Empfangene Daten:", data); // Protokollieren der empfangenen Daten
   } catch (e) {
     console.error(`Fehler beim Parsen der MQTT-Nachricht: ${e}`);
     return;
   }
 
   if (data.mac) {
-    const collectionName =
-      topic === process.env.MQTT_TEMPERATURE_TOPIC
-        ? "temperatureData"
-        : "humidityData";
-    // const databese = await connectToDatabase();
-    // console.log("databese:", databese);
-    // console.log(db);
-    // const collection = databese.collection("data");
+    let sensorType ; 
+    if (topic === process.env.MQTT_TEMPERATURE_TOPIC) {
+      sensorType = "temperature";
+    } else if (topic === process.env.MQTT_HUMIDITY_TOPIC) {
+      sensorType = "humidity";
+    } else if (topic === process.env.MQTT_DUST_TOPIC) {
+      sensorType = "dust"; // Stellen Sie sicher, dass dies mit Ihrem MQTT-Nachrichtenformat übereinstimmt
+    } else if (topic === process.env.MQTT_CO2_TOPIC) {
+      sensorType = "co2"; 
+    } else {
+      console.error("Unbekanntes Topic: " + topic);
+      return;
+    }
+
     await mongoClient.connect();
     const collection = mongoClient.db("userDB").collection("data");
 
     const document = {
       mac: data.mac,
-      sensorType:
-        topic === process.env.MQTT_TEMPERATURE_TOPIC
-          ? "temperature"
-          : "humidity",
-      value:
-        topic === process.env.MQTT_TEMPERATURE_TOPIC
-          ? data.temperature
-          : data.humidity,
-      // humidityvalue: topic === process.env.MQTT_HUMIDITY_TOPIC ?  data.humidity : data,
-      // temperaturevalue: topic === process.env.MQTT_TEMPERATURE_TOPIC ? data.temperature : null,
+      sensorType: sensorType,
+      value: data[sensorType], // Stellen Sie sicher, dass dieser Schlüssel im JSON-Objekt vorhanden ist
       timestamp: new Date(),
     };
 
     try {
       await collection.insertOne(document);
-      //   console.log(
-      //     `Daten gespeichert in ${collectionName}: ${JSON.stringify(document)}`
-      //   );
+      console.log(
+        `Daten gespeichert für ${sensorType}: ${JSON.stringify(document)}`
+      );
     } catch (e) {
       console.error(`Fehler beim Speichern in die Datenbank: ${e}`);
     }
+  } else {
+    console.error("Keine MAC-Adresse in den Daten gefunden");
   }
 });
 
 // REST API Endpunkte
 app.post("/add-esp-device", async (req, res) => {
-  const { mac, username } = req.body;
-  if (!mac || !username) {
-    return res
-      .status(400)
-      .send({ error: "MAC-Adresse und Benutzername sind erforderlich" });
+  console.log("calling /add-esp-device endpoint");
+  const { mac, username, devicename, raum } = req.body;
+  console.log("adding esp with following data:");
+  console.log(mac, username, devicename, raum);
+  if (!mac || !username || !devicename || !raum) {
+    console.log("MAC-Adresse und Benutzername sind erforderlich");
+    return res.status(400);
+    //   .send({ error: "MAC-Adresse und Benutzername sind erforderlich" });
   }
 
   try {
     const result = await db.collection("esp_devices").insertOne({
       mac,
       username,
+      devicename,
+      raum,
       created_at: new Date(),
     });
+    console.log("ESP-Gerät erfolgreich hinzugefügt");
     res.status(201).send({
       message: "ESP-Gerät erfolgreich hinzugefügt",
       id: result.insertedId,
     });
   } catch (err) {
-    res.status(500).send({ error: "Fehler beim Hinzufügen des ESP-Geräts" });
+    console.error("Fehler beim Hinzufügen des ESP-Geräts:", err);
+    // res.status(500).send({ error: "Fehler beim Hinzufügen des ESP-Geräts" });
   }
 });
 
 // GET-Route, um alle Daten zu holen
-app.get("/data", async (req, res) => {
+app.post("/data", async (req, res) => {
   console.log("calling /data endpoint");
-  const response = await axios.post("http://localhost:3001/verify-token");
-  const username = response.data.user;
-  console.log(response);
-  console.log(username);
+  const authheader = req.headers.authorization;
+  if (!authheader || !authheader.split(" ")[1])
+    return res.status(401).send({ error: "Token ist ungültig" });
+  const token = authheader && authheader.split(" ")[1];
+
+  const validationResponse = await axios.get(
+    "http://localhost:3001/validate-token",
+    {
+      headers: { authorization: `Bearer ${token}` },
+    }
+  );
+  console.log("Token-Validierung erfolgreich");
+  console.log(validationResponse.data.user.username);
+  const username = validationResponse.data.user.username;
+  if (!validationResponse.data.isValid) {
+    console.log("Token ist ungültig");
+    return res.status(403).send({ error: "Token ist ungültig" });
+  }
+
   try {
     await mongoClient.connect();
-    const data = mongoClient
+    const data = await mongoClient
       .db("userDB")
       .collection("esp_devices")
-      .findAll()
+      .find({ username: username })
       .toArray();
-    //   const data = await db.collection("data").find({}).toArray();
+    console.log(data);
     res.status(200).json(data);
   } catch (err) {
     res.status(500).send({ error: "Fehler beim Abrufen der Daten" });
   }
+});
+
+// GET-Route, um Daten für ein bestimmtes Gerät abzurufen
+app.post("/devicedata/:mac", async (req, res) => {
+  const { mac } = req.params;
+  console.log("Anfrage für Gerät mit MAC-Adresse:", mac);
+
+  try {
+    const deviceData = await db.collection("data").find({ mac: mac }).toArray();
+    console.log("Gerätedaten gefunden:", deviceData);
+    res.status(200).json(deviceData);
+  } catch (err) {
+    console.error("Fehler beim Abrufen der Gerätedaten:", err);
+    res.status(500).send({ error: "Fehler beim Abrufen der Gerätedaten" });
+  }
+});
+
+// REST API Endpunkt für Raumdaten
+app.get("/raumdata", async (req, res) => {
   try {
     await mongoClient.connect();
-    const data = mongoClient.db("userDB").collection("data").find({}).toArray();
-    //   const data = await db.collection("data").find({}).toArray();
-    res.status(200).json(data);
+    const rooms = await mongoClient
+      .db("userDB")
+      .collection("esp_devices")
+      .aggregate([{ $group: { _id: "$raum", devices: { $push: "$$ROOT" } } }])
+      .toArray();
+    res.status(200).json(rooms);
   } catch (err) {
-    res.status(500).send({ error: "Fehler beim Abrufen der Daten" });
+    console.error("Fehler beim Abrufen der Raumdaten:", err);
+    res.status(500).send({ error: "Fehler beim Abrufen der Raumdaten" });
   }
 });
 
 // Serverstart
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  //   await connectToDatabase(); // Stellen Sie sicher, dass die Datenbankverbindung hergestellt ist, bevor der Server Anfragen annimmt
+  await connectToDatabase(); // Stellen Sie sicher, dass die Datenbankverbindung hergestellt ist
   console.log(`Server läuft auf Port ${PORT}`);
 });
